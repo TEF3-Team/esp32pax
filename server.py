@@ -44,10 +44,11 @@ STABLE_PROFILE_FIELDS = (
     "extids",
 )
 
+
 def inject_omnistatus(source: str, text: str, score: float):
     if ENABLE_OMNISTATUS != "1" or not OMNISTATUS_API:
         return
-    
+
     target_url = OMNISTATUS_API
     if not target_url.endswith("/event") and not target_url.endswith("/events"):
         target_url = target_url.rstrip("/") + "/event"
@@ -55,14 +56,15 @@ def inject_omnistatus(source: str, text: str, score: float):
     try:
         payload = {"source": source, "text": text, "score": score}
         r = requests.post(target_url, json=payload, timeout=5)
-        
+
         if r.status_code == 422:
-            print(f"❌ OmniStatus 422 Unprocessable Entity! Response: {r.text} | Payload: {json.dumps(payload)}")
+            print(f"OmniStatus 422 Unprocessable Entity! Response: {r.text} | Payload: {json.dumps(payload)}")
         elif r.status_code != 200:
-            print(f"⚠️ OmniStatus returned {r.status_code}: {r.text}")
-            
+            print(f"OmniStatus returned {r.status_code}: {r.text}")
+
     except Exception as e:
-        print(f"❌ OmniStatus Error: {e}")
+        print(f"OmniStatus Error: {e}")
+
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -141,6 +143,10 @@ HTML_TEMPLATE = """
             border-color: var(--accent);
             box-shadow: 0 0 10px rgba(0, 209, 255, 0.2);
         }
+        .card.home {
+            border-color: #ffd166;
+            box-shadow: 0 0 12px rgba(255, 209, 102, 0.35);
+        }
         .eyebrow {
             font-size: 0.75em;
             color: var(--muted);
@@ -180,13 +186,14 @@ HTML_TEMPLATE = """
     </style>
     <script>
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const HOME_PROX_THRESHOLD = 60;
         let wasInteracted = false;
         let knownIds = new Set();
 
-        document.addEventListener('click', () => { 
+        document.addEventListener('click', () => {
             if (!wasInteracted) {
-                wasInteracted = true; 
-                audioCtx.resume(); 
+                wasInteracted = true;
+                audioCtx.resume();
             }
         }, {once: true});
 
@@ -230,14 +237,18 @@ HTML_TEMPLATE = """
                 classes.push("new");
             }
             if (o.score_pct >= 82 && o.recurrent) classes.push("high");
+            if (o.prox >= HOME_PROX_THRESHOLD) classes.push("home");
 
             const status = o.recurrent ? `[${o.recurrent_label}]` : "[PATRON NUEVO]";
             const safeCurrentName = o.custom_name ? o.custom_name.replace(/'/g, "\\'") : "";
-            const seenCountHtml = o.seen_count > 1 ? `<div class="meta" style="color: var(--accent);">Visto: ${o.seen_count} veces</div>` : '';
-            
-            const titleHtml = o.custom_name 
+            const seenCountHtml = o.seen_count > 1 ? `<div class="meta" style="color: var(--accent);">Visto: ${o.seen_count} veces</div>` : "";
+            const homeStatusHtml = o.prox >= HOME_PROX_THRESHOLD
+                ? `<div class="meta" style="color: #ffd166;">EN CASA >= ${HOME_PROX_THRESHOLD}%</div>`
+                : "";
+
+            const titleHtml = o.custom_name
                 ? `<div class="recurrent-name">${o.custom_name}</div>`
-                : '';
+                : "";
 
             return `
                 <div class="${classes.join(" ")}">
@@ -247,6 +258,7 @@ HTML_TEMPLATE = """
                         <a class="edit-btn" onclick="setCustomName('${o.pattern_id}', '${safeCurrentName}')">✎</a>
                     </div>
                     <div class="score">${o.prox}%</div>
+                    ${homeStatusHtml}
                     <div class="meta">Patron: ${o.pattern_id}</div>
                     <div class="meta">Huella: ${o.profile_id}</div>
                     ${seenCountHtml}
@@ -366,6 +378,7 @@ def upgrade_memory(raw):
             "features": {},
             "last_score": 1.0,
             "last_confidence": "Legado",
+            "custom_name": "",
         }
 
     return upgraded
@@ -560,86 +573,76 @@ def build_signal_summary(features):
         parts.append("/".join(phy))
 
     if features.get("vendors"):
-        parts.append(f"OUI {features['vendors']}")
+        parts.append(f"OUI {features['vendors'][:24]}")
 
     behavior = []
     if features.get("probe_bucket"):
-        behavior.append(f"ritmo {features['probe_bucket']}")
+        behavior.append(f"probes {features['probe_bucket']}")
     if features.get("wildcard_bucket"):
         behavior.append(features["wildcard_bucket"])
     if behavior:
-        parts.append(", ".join(behavior))
+        parts.append(" | ".join(behavior))
 
-    return " | ".join(parts[:4]) or "perfil parcial"
+    return " · ".join(parts) if parts else "ritmo 1"
 
 
 def match_entity(memory, features, profile_id):
     best_entity = None
     best_score = 0.0
 
-    for entity in memory["entities"].values():
+    for entity in memory.get("entities", {}).values():
         if profile_id in entity.get("profile_ids", []):
             return entity, 1.0
 
         score = compare_features(features, entity.get("features", {}))
         if score > best_score:
-            best_score = score
             best_entity = entity
+            best_score = score
 
-    if best_entity and best_score >= SIMILARITY_MATCH_THRESHOLD:
+    if best_score >= SIMILARITY_MATCH_THRESHOLD:
         return best_entity, best_score
-
-    return None, 0.0
-
-
-def merge_alias(entity, current_id):
-    aliases = [alias for alias in entity.get("aliases", []) if alias]
-    if current_id and current_id not in aliases:
-        aliases.append(current_id)
-    entity["aliases"] = aliases[-8:]
-
-
-def update_entity(entity, current_id, profile_id, features, score, matched_existing):
-    entity.setdefault("profile_ids", [])
-    if profile_id not in entity["profile_ids"]:
-        entity["profile_ids"].append(profile_id)
-    entity["profile_ids"] = entity["profile_ids"][-8:]
-
-    entity["primary_profile_id"] = entity["profile_ids"][-1]
-    entity["last_id"] = current_id
-    entity["seen_last"] = now_iso()
-    entity["seen_count"] = int(entity.get("seen_count", 0)) + 1
-    entity["last_score"] = score
-    entity["last_confidence"] = confidence_label(score)
-    merge_alias(entity, current_id)
-
-    stored_features = entity.get("features", {})
-    if not stored_features or compare_features(features, stored_features) >= 0.92 or not matched_existing:
-        entity["features"] = features
+    return None, best_score
 
 
 def create_entity(memory, current_id, profile_id, features):
     entity_id = allocate_entity_id(memory)
-    timestamp = now_iso()
     entity = {
         "entity_id": entity_id,
         "primary_profile_id": profile_id,
         "profile_ids": [profile_id],
         "last_id": current_id,
         "aliases": [current_id] if current_id else [],
-        "seen_first": timestamp,
-        "seen_last": timestamp,
+        "seen_first": now_iso(),
+        "seen_last": now_iso(),
         "seen_count": 0,
         "features": features,
         "last_score": 0.0,
         "last_confidence": "Baja",
+        "custom_name": "",
     }
     memory["entities"][entity_id] = entity
     return entity
 
 
-agente_memory = upgrade_memory(load_raw_memory())
-radar_data = {"pax": 0, "objetivos": []}
+def update_entity(entity, current_id, profile_id, features, score, matched_existing):
+    if profile_id and profile_id not in entity.get("profile_ids", []):
+        entity.setdefault("profile_ids", []).append(profile_id)
+    if current_id and current_id not in entity.get("aliases", []):
+        entity.setdefault("aliases", []).append(current_id)
+
+    entity["last_id"] = current_id or entity.get("last_id", "")
+    entity["seen_last"] = now_iso()
+    entity["seen_count"] = int(entity.get("seen_count", 0) or 0) + 1
+    entity["features"] = features or entity.get("features", {})
+    entity["last_score"] = score
+    entity["last_confidence"] = confidence_label(score if matched_existing else 0.0)
+    entity.setdefault("custom_name", "")
+
+
+raw_memory = load_raw_memory()
+agente_memory = upgrade_memory(raw_memory)
+save_memory(agente_memory)
+radar_data = {"pax": 0, "objetivos": [], "recent": []}
 
 
 @app.route("/")
@@ -685,15 +688,13 @@ def api_name():
         name = data.get("name", "").strip()
 
         if pattern_id and pattern_id in agente_memory["entities"]:
-            # Actualizamos la memoria
             agente_memory["entities"][pattern_id]["custom_name"] = name
             save_memory(agente_memory)
-            
-            # Buscamos en radar_data si está activo en este momento para actualizar de inmediato
+
             for obj in radar_data.get("objetivos", []):
                 if obj.get("pattern_id") == pattern_id:
                     obj["custom_name"] = name
-                    
+
             return jsonify({"status": "ok"}), 200
         return jsonify({"status": "not_found"}), 404
     except Exception as exc:

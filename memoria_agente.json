@@ -1,6 +1,6 @@
 {
     "schema_version": 2,
-    "next_entity_seq": 67,
+    "next_entity_seq": 81,
     "entities": {
         "PT-0001": {
             "entity_id": "PT-0001",
@@ -1938,6 +1938,412 @@
             ],
             "seen_first": "2026-04-13T16:48:56Z",
             "seen_last": "2026-04-13T16:48:56Z",
+            "seen_count": 1,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 0.0,
+            "last_confidence": "Baja"
+        },
+        "PT-0067": {
+            "entity_id": "PT-0067",
+            "primary_profile_id": "79C8A929F5AD",
+            "profile_ids": [
+                "79C8A929F5AD"
+            ],
+            "last_id": "7CB94CBB8DB7",
+            "aliases": [
+                "7CB94CBB8DB7"
+            ],
+            "seen_first": "2026-04-19T02:34:04Z",
+            "seen_last": "2026-04-19T04:04:48Z",
+            "seen_count": 268,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 1.0,
+            "last_confidence": "Alta"
+        },
+        "PT-0068": {
+            "entity_id": "PT-0068",
+            "primary_profile_id": "82EBC6FC5980",
+            "profile_ids": [
+                "82EBC6FC5980"
+            ],
+            "last_id": "7C87CEA4E9AA",
+            "aliases": [
+                "7C87CEA4E9AA"
+            ],
+            "seen_first": "2026-04-19T02:34:04Z",
+            "seen_last": "2026-04-19T04:04:48Z",
+            "seen_count": 268,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 1.0,
+            "last_confidence": "Alta"
+        },
+        "PT-0069": {
+            "entity_id": "PT-0069",
+            "primary_profile_id": "F62692879A54",
+            "profile_ids": [
+                "F62692879A54"
+            ],
+            "last_id": "9803CF8AAF9E",
+            "aliases": [
+                "9803CF8AAF9E"
+            ],
+            "seen_first": "2026-04-19T02:34:15Z",
+            "seen_last": "2026-04-19T04:02:06Z",
+            "seen_count": 80,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 1.0,
+            "last_confidence": "Alta"
+        },
+        "PT-0070": {
+            "entity_id": "PT-0070",
+            "primary_profile_id": "4475DCACD7B7",
+            "profile_ids": [
+                "4475DCACD7B7"
+            ],
+            "last_id": "50FDD55308B9",
+            "aliases": [
+                "50FDD55308B9"
+            ],
+            "seen_first": "2026-04-19T02:38:06Z",
+            "seen_last": "2026-04-19T03:38:07Z",
+            "seen_count": 11,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 1.0,
+            "last_confidence": "Alta"
+        },
+        "PT-0071": {
+            "entity_id": "PT-0071",
+            "primary_profile_id": "0974B2F967DC",
+            "profile_ids": [
+                "0974B2F967DC"
+            ],
+            "last_id": "685911E44968",
+            "aliases": [
+                "685911E44968"
+            ],
+            "seen_first": "2026-04-19T02:45:37Z",
+            "seen_last": "2026-04-19T03:46:08Z",
+            "seen_count": 4,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 1.0,
+            "last_confidence": "Alta"
+        },
+        "PT-0072": {
+            "entity_id": "PT-0072",
+            "primary_profile_id": "7D603F786EC0",
+            "profile_ids": [
+                "7D603F786EC0"
+            ],
+            "last_id": "88DE7C70FF4F",
+            "aliases": [
+                "88DE7C70FF4F"
+            ],
+            "seen_first": "2026-04-19T02:53:41Z",
+            "seen_last": "2026-04-19T02:53:41Z",
+            "seen_count": 1,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 0.0,
+            "last_confidence": "Baja"
+        },
+        "PT-0073": {
+            "entity_id": "PT-0073",
+            "primary_profile_id": "9DBF07D9B23D",
+            "profile_ids": [
+                "9DBF07D9B23D"
+            ],
+            "last_id": "54F29F9124A4",
+            "aliases": [
+                "54F29F9124A4"
+            ],
+            "seen_first": "2026-04-19T02:56:40Z",
+            "seen_last": "2026-04-19T03:13:49Z",
+            "seen_count": 4,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 1.0,
+            "last_confidence": "Alta"
+        },
+        "PT-0074": {
+            "entity_id": "PT-0074",
+            "primary_profile_id": "486739A32881",
+            "profile_ids": [
+                "486739A32881"
+            ],
+            "last_id": "A436C716389E",
+            "aliases": [
+                "A436C716389E"
+            ],
+            "seen_first": "2026-04-19T02:57:03Z",
+            "seen_last": "2026-04-19T02:57:03Z",
+            "seen_count": 1,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 0.0,
+            "last_confidence": "Baja"
+        },
+        "PT-0075": {
+            "entity_id": "PT-0075",
+            "primary_profile_id": "86D6D8137AC9",
+            "profile_ids": [
+                "86D6D8137AC9"
+            ],
+            "last_id": "600194C207C3",
+            "aliases": [
+                "600194C207C3"
+            ],
+            "seen_first": "2026-04-19T02:57:03Z",
+            "seen_last": "2026-04-19T02:57:14Z",
+            "seen_count": 2,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 1.0,
+            "last_confidence": "Alta"
+        },
+        "PT-0076": {
+            "entity_id": "PT-0076",
+            "primary_profile_id": "9821FE9353DE",
+            "profile_ids": [
+                "9821FE9353DE"
+            ],
+            "last_id": "CE2671959784",
+            "aliases": [
+                "CE2671959784"
+            ],
+            "seen_first": "2026-04-19T02:57:49Z",
+            "seen_last": "2026-04-19T02:57:49Z",
+            "seen_count": 1,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 0.0,
+            "last_confidence": "Baja"
+        },
+        "PT-0077": {
+            "entity_id": "PT-0077",
+            "primary_profile_id": "3EDCD6462792",
+            "profile_ids": [
+                "3EDCD6462792"
+            ],
+            "last_id": "A0A3B3FFEEE8",
+            "aliases": [
+                "A0A3B3FFEEE8"
+            ],
+            "seen_first": "2026-04-19T02:59:56Z",
+            "seen_last": "2026-04-19T02:59:56Z",
+            "seen_count": 1,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 0.0,
+            "last_confidence": "Baja"
+        },
+        "PT-0078": {
+            "entity_id": "PT-0078",
+            "primary_profile_id": "59F54DF40B0C",
+            "profile_ids": [
+                "59F54DF40B0C"
+            ],
+            "last_id": "46865F6B8EA7",
+            "aliases": [
+                "46865F6B8EA7"
+            ],
+            "seen_first": "2026-04-19T03:03:35Z",
+            "seen_last": "2026-04-19T03:03:35Z",
+            "seen_count": 1,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 0.0,
+            "last_confidence": "Baja"
+        },
+        "PT-0079": {
+            "entity_id": "PT-0079",
+            "primary_profile_id": "207861856CC4",
+            "profile_ids": [
+                "207861856CC4"
+            ],
+            "last_id": "FC3CD701BE74",
+            "aliases": [
+                "FC3CD701BE74"
+            ],
+            "seen_first": "2026-04-19T03:05:54Z",
+            "seen_last": "2026-04-19T03:05:54Z",
+            "seen_count": 1,
+            "features": {
+                "ies": "",
+                "rates": "",
+                "xrates": "",
+                "vendors": "",
+                "extcaps": "",
+                "htcaps": "",
+                "vhtcaps": "",
+                "rsn": "",
+                "extids": "",
+                "probe_bucket": "1",
+                "wildcard_bucket": ""
+            },
+            "last_score": 0.0,
+            "last_confidence": "Baja"
+        },
+        "PT-0080": {
+            "entity_id": "PT-0080",
+            "primary_profile_id": "CB190C5B43E8",
+            "profile_ids": [
+                "CB190C5B43E8"
+            ],
+            "last_id": "80C5F2A2E7F7",
+            "aliases": [
+                "80C5F2A2E7F7"
+            ],
+            "seen_first": "2026-04-19T03:06:05Z",
+            "seen_last": "2026-04-19T03:06:05Z",
             "seen_count": 1,
             "features": {
                 "ies": "",
