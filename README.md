@@ -9,6 +9,8 @@ La version 2 requiere actualizar ambas partes:
 2. Reiniciar `server.py`.
 
 El servidor migra automaticamente `memoria_agente.json` del esquema 2 al 3.
+Ese archivo contiene estado local de detecciones, se crea automaticamente y no
+se versiona en Git.
 
 ## Pruebas
 
