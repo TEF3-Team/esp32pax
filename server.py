@@ -18,7 +18,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 DB_PATH = os.getenv("PAX_MEMORY_PATH", "memoria_agente.json")
 SIMILARITY_MATCH_THRESHOLD = 0.86
 MIN_STRONG_FEATURE_MATCHES = 3

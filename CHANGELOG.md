@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.1 - 2026-06-15
+
+- Ignora el estado de ejecución local (memoria_agente.json, server.pid).
+- Añade `.env.example` y actualiza `.gitignore`.
+
 ## 2.0.0 - 2026-06-15
 
 - Agrega channel hopping en canales 1-13.
