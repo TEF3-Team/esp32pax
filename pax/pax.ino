@@ -15,9 +15,12 @@ const uint16_t SERVER_PORT = 5000;
 const char* SERVER_PATH    = "/api/report";
 
 constexpr unsigned long TIEMPO_BARRIDO = 10000;
-constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
+constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
 constexpr uint16_t HTTP_TIMEOUT_MS = 5000;
 constexpr int MIN_PROBE_PACKET_LEN = 26;
+constexpr unsigned long CHANNEL_DWELL_MS = 350;
+constexpr uint8_t SNIFFER_CHANNELS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+constexpr size_t SNIFFER_CHANNEL_COUNT = sizeof(SNIFFER_CHANNELS) / sizeof(SNIFFER_CHANNELS[0]);
 
 // Estructuras de datos
 struct PacketTraits {
@@ -30,19 +33,22 @@ struct CapturedDevice {
   int bestRssi = -127;
   uint16_t probeCount = 0;
   uint16_t wildcardCount = 0;
+  uint16_t observedChannelMask = 0;
   String ieSignature, rates, extRates, vendorOUIs, extCaps, htCaps, vhtCaps, rsn, extIds;
   uint8_t channel = 0;
 };
 
 struct Objetivo {
-  String id, ieSignature, rates, extRates, vendorOUIs, extCaps, htCaps, vhtCaps, rsn, extIds;
-  int prox;
+  String id, ieSignature, rates, extRates, vendorOUIs, extCaps, htCaps, vhtCaps, rsn, extIds, observedChannels;
+  int prox, rssi;
   uint16_t probeCount, wildcardCount;
   uint8_t channel;
 };
 
 std::map<String, CapturedDevice> dispositivos;
 unsigned long inicio_ciclo = 0;
+unsigned long ultimo_salto_canal = 0;
+size_t indice_canal = 0;
 
 // --- Funciones de Utilidad ---
 String hex_byte(uint8_t value) {
@@ -56,6 +62,16 @@ String bytes_a_hex(const uint8_t* data, size_t len, size_t maxLen = 0) {
   String out;
   out.reserve(usable * 2);
   for (size_t i = 0; i < usable; i++) out += hex_byte(data[i]);
+  return out;
+}
+
+String canales_a_texto(uint16_t mask) {
+  String out;
+  for (uint8_t channel = 1; channel <= 13; channel++) {
+    if ((mask & (1U << (channel - 1))) == 0) continue;
+    if (!out.isEmpty()) out += ",";
+    out += String(channel);
+  }
   return out;
 }
 
@@ -120,6 +136,10 @@ void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
 
   d.probeCount++;
   if (traits.wildcard) d.wildcardCount++;
+  uint8_t observedChannel = pkt->rx_ctrl.channel;
+  if (observedChannel >= 1 && observedChannel <= 13) {
+    d.observedChannelMask |= (1U << (observedChannel - 1));
+  }
 
   int nR = riqueza_traits(traits);
   int aR = riqueza_capturada(d);
@@ -138,11 +158,35 @@ void iniciar_sniffer() {
   WiFi.disconnect();
   esp_wifi_set_promiscuous(false);
   esp_wifi_set_promiscuous_rx_cb(&sniffer);
+  indice_canal = 0;
+  esp_wifi_set_channel(SNIFFER_CHANNELS[indice_canal], WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(true);
-  Serial.println(">> Sniffer ON");
+  ultimo_salto_canal = millis();
+  Serial.printf(">> Sniffer ON, canal %u\n", SNIFFER_CHANNELS[indice_canal]);
+}
+
+void actualizar_canal_sniffer() {
+  if (millis() - ultimo_salto_canal < CHANNEL_DWELL_MS) return;
+
+  indice_canal = (indice_canal + 1) % SNIFFER_CHANNEL_COUNT;
+  esp_err_t result = esp_wifi_set_channel(SNIFFER_CHANNELS[indice_canal], WIFI_SECOND_CHAN_NONE);
+  if (result == ESP_OK) {
+    ultimo_salto_canal = millis();
+  } else {
+    Serial.printf(">> Error cambiando a canal %u: %d\n", SNIFFER_CHANNELS[indice_canal], result);
+    ultimo_salto_canal = millis();
+  }
 }
 
 // --- Comunicación ---
+String json_pair(const char* key, const String& value) {
+  return String("\"") + key + "\":\"" + value + "\"";
+}
+
+String json_pair(const char* key, int value) {
+  return String("\"") + key + "\":" + String(value);
+}
+
 void enviar_http(const std::vector<Objetivo>& ranking, int total) {
   Serial.println(">> Conectando WiFi...");
   esp_wifi_set_promiscuous(false);
@@ -153,21 +197,53 @@ void enviar_http(const std::vector<Objetivo>& ranking, int total) {
 
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    http.begin(String("http://") + SERVER_HOST + ":" + SERVER_PORT + SERVER_PATH);
+    String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT + SERVER_PATH;
+    Serial.print(">> WiFi IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.print(">> Gateway: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print(">> POST URL: ");
+    Serial.println(url);
+    http.begin(url);
+    http.setTimeout(HTTP_TIMEOUT_MS);
     http.addHeader("Content-Type", "application/json");
 
     String json = "{\"pax\":" + String(total) + ",\"objetivos\":[";
     for (size_t i = 0; i < ranking.size(); i++) {
-      json += "{\"id\":\"" + ranking[i].id + "\",\"prox\":" + ranking[i].prox + "}";
+      json += "{";
+      json += json_pair("id", ranking[i].id);
+      json += "," + json_pair("prox", ranking[i].prox);
+      json += "," + json_pair("rssi", ranking[i].rssi);
+      json += "," + json_pair("ies", ranking[i].ieSignature);
+      json += "," + json_pair("rates", ranking[i].rates);
+      json += "," + json_pair("xrates", ranking[i].extRates);
+      json += "," + json_pair("vendors", ranking[i].vendorOUIs);
+      json += "," + json_pair("extcaps", ranking[i].extCaps);
+      json += "," + json_pair("htcaps", ranking[i].htCaps);
+      json += "," + json_pair("vhtcaps", ranking[i].vhtCaps);
+      json += "," + json_pair("rsn", ranking[i].rsn);
+      json += "," + json_pair("extids", ranking[i].extIds);
+      json += "," + json_pair("observed_channels", ranking[i].observedChannels);
+      json += "," + json_pair("probes", ranking[i].probeCount);
+      json += "," + json_pair("wildcards", ranking[i].wildcardCount);
+      json += "," + json_pair("channel", ranking[i].channel);
+      json += "}";
       if (i < ranking.size() - 1) json += ",";
     }
     json += "]}";
 
+    Serial.print(">> Payload bytes: ");
+    Serial.println(json.length());
     int code = http.POST(json);
     Serial.printf(">> API Code: %d\n", code);
+    if (code <= 0) {
+      Serial.print(">> HTTP Error: ");
+      Serial.println(http.errorToString(code));
+    }
     http.end();
   } else {
-    Serial.println(">> Error WiFi");
+    Serial.print(">> Error WiFi, status: ");
+    Serial.println(WiFi.status());
   }
   
   WiFi.disconnect();
@@ -183,13 +259,20 @@ void setup() {
 }
 
 void loop() {
+  actualizar_canal_sniffer();
+
   if (millis() - inicio_ciclo >= TIEMPO_BARRIDO) {
+    esp_wifi_set_promiscuous(false);
     Serial.printf(">> Dispositivos detectados: %d\n", dispositivos.size());
     
     std::vector<Objetivo> ranking;
     for (auto const& [id, d] : dispositivos) {
       int p = constrain(map(d.bestRssi, -100, -30, 0, 100), 0, 100);
-      ranking.push_back({id, d.ieSignature, d.rates, d.extRates, d.vendorOUIs, d.extCaps, d.htCaps, d.vhtCaps, d.rsn, d.extIds, p, d.probeCount, d.wildcardCount, d.channel});
+      ranking.push_back({
+        id, d.ieSignature, d.rates, d.extRates, d.vendorOUIs, d.extCaps,
+        d.htCaps, d.vhtCaps, d.rsn, d.extIds, canales_a_texto(d.observedChannelMask),
+        p, d.bestRssi, d.probeCount, d.wildcardCount, d.channel
+      });
     }
 
     std::sort(ranking.begin(), ranking.end(), [](const Objetivo& a, const Objetivo& b) {
