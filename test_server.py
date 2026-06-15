@@ -48,6 +48,14 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         return server.radar_data["objetivos"][0]
 
+    def test_version_is_exposed_by_status_api(self):
+        response = self.client.get("/api/status")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["version"], "2.0.0")
+        with open("VERSION", encoding="utf-8") as version_file:
+            self.assertEqual(version_file.read().strip(), server.APP_VERSION)
+
     def test_known_alias_matches_immediately(self):
         first = self.report("001122334455")
         second = self.report("001122334455")

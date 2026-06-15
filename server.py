@@ -18,6 +18,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
+APP_VERSION = "2.0.0"
 DB_PATH = os.getenv("PAX_MEMORY_PATH", "memoria_agente.json")
 SIMILARITY_MATCH_THRESHOLD = 0.86
 MIN_STRONG_FEATURE_MATCHES = 3
@@ -252,7 +253,7 @@ HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PaxRadar</title>
+    <title>PaxRadar v{{ app_version }}</title>
     <style>
         :root {
             --bg: #050505;
@@ -647,7 +648,7 @@ HTML_TEMPLATE = """
 <body>
     <div class="header">
         <button class="btn" onclick="resetCounters()">Resetear Radar</button>
-        <h1>PAX-RADAR: <span id="pax">0</span></h1>
+        <h1>PAX-RADAR v{{ app_version }}: <span id="pax">0</span></h1>
         <div id="status-line" class="status-line">Estado inicializando...</div>
         <div style="font-size: 0.8em; color: var(--muted); margin-top: 5px;">(Haz click en cualquier parte de la pagina para activar el audio de alertas)</div>
         <div class="hint">Tip: ponle nombre con el lapiz cuando reconozcas un equipo; PaxRadar lo sigue por patron aunque cambie la MAC.</div>
@@ -1141,11 +1142,12 @@ radar_data = {"pax": 0, "objetivos": [], "recent": [], "status": {}}
 
 @app.route("/")
 def index():
-    return render_template_string(HTML_TEMPLATE)
+    return render_template_string(HTML_TEMPLATE, app_version=APP_VERSION)
 
 
 def current_status():
     return {
+        "version": APP_VERSION,
         "started_at": server_status.get("started_at", ""),
         "last_report_at": server_status.get("last_report_at", ""),
         "last_alert_at": server_status.get("last_alert_at", ""),

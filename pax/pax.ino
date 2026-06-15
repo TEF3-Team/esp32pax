@@ -8,6 +8,7 @@
 #include <HTTPClient.h>
 
 // ===== CONFIGURACION =====
+const char* FIRMWARE_VERSION = "2.0.0";
 const char* WIFI_SSID      = "WifiAX";
 const char* WIFI_PASSWORD  = "hkmhkm1234566";
 const char* SERVER_HOST    = "192.168.8.194";
@@ -208,7 +209,7 @@ void enviar_http(const std::vector<Objetivo>& ranking, int total) {
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.addHeader("Content-Type", "application/json");
 
-    String json = "{\"pax\":" + String(total) + ",\"objetivos\":[";
+    String json = "{\"firmware_version\":\"" + String(FIRMWARE_VERSION) + "\",\"pax\":" + String(total) + ",\"objetivos\":[";
     for (size_t i = 0; i < ranking.size(); i++) {
       json += "{";
       json += json_pair("id", ranking[i].id);
@@ -253,6 +254,7 @@ void enviar_http(const std::vector<Objetivo>& ranking, int total) {
 void setup() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   Serial.begin(115200);
+  Serial.printf("\n>> PaxRadar firmware v%s\n", FIRMWARE_VERSION);
   WiFi.persistent(false);
   inicio_ciclo = millis();
   iniciar_sniffer();
