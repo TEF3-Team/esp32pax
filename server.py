@@ -2,6 +2,8 @@ import html
 import hashlib
 import json
 import os
+import threading
+import time
 from collections import Counter
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -38,8 +40,14 @@ MONGO_SERVER_SELECTION_TIMEOUT_MS = int(os.getenv("MONGO_SERVER_SELECTION_TIMEOU
 ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "0")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-TELEGRAM_MIN_PROX = int(os.getenv("TELEGRAM_MIN_PROX", "60"))
-TELEGRAM_COOLDOWN_SECONDS = int(os.getenv("TELEGRAM_COOLDOWN_SECONDS", "300"))
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+AI_CRON_INTERVAL_HOURS = float(os.getenv("AI_CRON_INTERVAL_HOURS", "4"))
+AI_CRON_WINDOW_HOURS = float(os.getenv("AI_CRON_WINDOW_HOURS", "8"))
+AI_ANALYSIS_PROMPT = os.getenv(
+    "AI_ANALYSIS_PROMPT",
+    "Analiza patrones WiFi detectados: dispositivos recurrentes, horarios, anomalías. Responde en español, máximo 200 caracteres.",
+)
 
 FIELD_WEIGHTS = {
     "ies": 0.22,
@@ -158,7 +166,7 @@ def save_omnistatus_event(event):
         return False, "error"
 
 
-def build_omnistatus_event(obj, score, detected_at):
+def build_omnistatus_event(obj, score, detected_at, esp_id="", esp_location=""):
     source = f"PaxRadar-{obj.get('display_id', '--')}"
     text = obj.get("signal_summary", "")
     return {
@@ -169,6 +177,8 @@ def build_omnistatus_event(obj, score, detected_at):
         "type": "pax_radar_detection",
         "detected_at": detected_at,
         "created_at": datetime.utcnow(),
+        "esp_id": esp_id,
+        "esp_location": esp_location,
         "pattern_id": obj.get("pattern_id", ""),
         "profile_id": obj.get("profile_id", ""),
         "display_id": obj.get("display_id", "--"),
@@ -230,23 +240,98 @@ def send_telegram_alert(message: str):
         return False, "error"
 
 
-def build_telegram_message(obj, detected_at, alert_reason):
-    label = obj.get("custom_name") or f"ID {obj.get('display_id', '--')}"
-    lines = [
-        "<b>PaxRadar alerta</b>",
-        f"Fecha: <code>{html.escape(detected_at)}</code>",
-        f"Dispositivo: <b>{html.escape(label)}</b>",
-        f"Estado: {html.escape(alert_reason)}",
-        f"Proximidad: <b>{obj.get('prox', 0)}%</b>",
-        f"Patron: <code>{html.escape(obj.get('pattern_id', '--'))}</code>",
-        f"Huella: <code>{html.escape(obj.get('profile_id', '--'))}</code>",
-        f"Confianza: {html.escape(obj.get('confidence_label', 'Baja'))} ({obj.get('score_pct', 0)}%)",
-    ]
+def build_analysis_payload(window_hours):
+    cutoff = datetime.utcnow() - timedelta(hours=window_hours)
+    events = []
 
-    if obj.get("signal_summary"):
-        lines.append(f"Senales: {html.escape(obj['signal_summary'])}")
+    if mongo_events_collection is not None:
+        try:
+            rows = mongo_events_collection.find(
+                {"created_at": {"$gte": cutoff}},
+                {"display_id": 1, "prox": 1, "recurrent": 1, "confidence_label": 1,
+                 "detected_at": 1, "custom_name": 1},
+            ).sort("_id", -1).limit(120)
+            for row in rows:
+                events.append({
+                    "id": row.get("display_id", "--"),
+                    "name": row.get("custom_name", ""),
+                    "prox": row.get("prox", 0),
+                    "recurrent": row.get("recurrent", False),
+                    "conf": row.get("confidence_label", ""),
+                    "at": row.get("detected_at", ""),
+                })
+        except Exception as exc:
+            print(f"AI cron: MongoDB query error: {exc}")
 
-    return "\n".join(lines)
+    if not events:
+        cutoff_iso = cutoff.isoformat()
+        for entity in agente_memory.get("entities", {}).values():
+            if (entity.get("seen_last", "") or "") >= cutoff_iso:
+                events.append({
+                    "id": (entity.get("last_id") or "--")[-6:],
+                    "name": entity.get("custom_name", ""),
+                    "recurrent": entity.get("seen_count", 0) > 1,
+                    "conf": entity.get("last_confidence", ""),
+                    "at": entity.get("seen_last", ""),
+                })
+
+    return events
+
+
+def call_openai_analysis(events, window_hours):
+    if not OPENAI_API_KEY:
+        return None, "no_api_key"
+
+    user_msg = f"Ventana: últimas {window_hours}h. Datos: {json.dumps(events, ensure_ascii=False)}"
+    payload = {
+        "model": "gpt-4.1-mini",
+        "messages": [
+            {"role": "system", "content": AI_ANALYSIS_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        "max_tokens": 300,
+        "temperature": 0.3,
+    }
+
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"].strip(), "ok"
+        print(f"OpenAI returned {resp.status_code}: {resp.text}")
+        return None, f"http_{resp.status_code}"
+    except Exception as exc:
+        print(f"OpenAI error: {exc}")
+        return None, "error"
+
+
+def run_ai_cron():
+    while True:
+        time.sleep(AI_CRON_INTERVAL_HOURS * 3600)
+        try:
+            events = build_analysis_payload(AI_CRON_WINDOW_HOURS)
+            if not events:
+                print("AI cron: sin eventos en la ventana, skip")
+                continue
+            analysis, ai_status = call_openai_analysis(events, AI_CRON_WINDOW_HOURS)
+            if not analysis:
+                print(f"AI cron: análisis fallido ({ai_status})")
+                continue
+            msg = (
+                f"<b>PaxRadar · Análisis IA</b>\n"
+                f"Ventana: {AI_CRON_WINDOW_HOURS}h · Eventos: {len(events)}\n\n"
+                f"{html.escape(analysis)}"
+            )
+            ok, tg_status = send_telegram_alert(msg)
+            print(f"AI cron: enviado={ok} tg={tg_status}")
+            server_status["last_alert_at"] = now_iso()
+            server_status["last_alert_status"] = tg_status
+        except Exception as exc:
+            print(f"AI cron error: {exc}")
 
 
 HTML_TEMPLATE = """
@@ -1128,7 +1213,6 @@ def update_entity(entity, current_id, profile_id, features, score, matched_exist
 raw_memory = load_raw_memory()
 agente_memory = upgrade_memory(raw_memory)
 save_memory(agente_memory)
-telegram_alert_cache = {}
 server_status = {
     "started_at": now_iso(),
     "last_report_at": "",
@@ -1198,7 +1282,6 @@ def api_reset():
     radar_data["objetivos"] = []
     radar_data["recent"] = []
     radar_data["status"] = current_status()
-    telegram_alert_cache.clear()
     server_status["last_alert_at"] = ""
     server_status["last_alert_status"] = "idle"
     return jsonify({"status": "ok"}), 200
@@ -1227,24 +1310,6 @@ def api_name():
         return jsonify({"status": "error"}), 400
 
 
-def telegram_alert_reason(obj, recurrent, rotated):
-    if obj.get("association_pending"):
-        return ""
-    prox = int(obj.get("prox", 0) or 0)
-    if rotated:
-        return "MAC rotada detectada"
-    if not recurrent and prox >= TELEGRAM_MIN_PROX:
-        return f"Patron nuevo cercano >= {TELEGRAM_MIN_PROX}%"
-    return ""
-
-
-def telegram_allowed(pattern_id, detected_at):
-    last_sent = parse_iso(telegram_alert_cache.get(pattern_id))
-    current = parse_iso(detected_at)
-    if not last_sent or not current:
-        return True
-    return current - last_sent >= timedelta(seconds=TELEGRAM_COOLDOWN_SECONDS)
-
 
 @app.route("/api/report", methods=["POST"])
 def api_report():
@@ -1253,6 +1318,8 @@ def api_report():
     try:
         data = request.get_json(force=True)
         detected_at = now_iso()
+        esp_id = data.get("esp_id", "")
+        esp_location = data.get("esp_location", "")
         prune_pending_matches(agente_memory, detected_at)
         server_status["last_report_at"] = detected_at
         objetivos_procesados = []
@@ -1334,16 +1401,8 @@ def api_report():
             obj["detected_at"] = detected_at
             objetivos_procesados.append(obj)
 
-            alert_reason = telegram_alert_reason(obj, recurrent, rotated)
-            if alert_reason and telegram_allowed(entity["entity_id"], detected_at):
-                ok, status = send_telegram_alert(build_telegram_message(obj, detected_at, alert_reason))
-                server_status["last_alert_status"] = status
-                if ok:
-                    telegram_alert_cache[entity["entity_id"]] = detected_at
-                    server_status["last_alert_at"] = detected_at
-
             mongo_ok, mongo_status = save_omnistatus_event(
-                build_omnistatus_event(obj, score, detected_at)
+                build_omnistatus_event(obj, score, detected_at, esp_id, esp_location)
             )
             server_status["last_mongo_event_status"] = mongo_status
             if mongo_ok:

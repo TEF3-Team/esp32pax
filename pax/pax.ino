@@ -9,6 +9,9 @@
 
 // ===== CONFIGURACION =====
 const char* FIRMWARE_VERSION = "2.0.0";
+const char* ESP_ID           = "esp32-01";       // ID unico de este nodo
+const char* ESP_LOCATION     = "entrada";         // Ubicacion fisica
+
 const char* WIFI_SSID      = "WifiAX";
 const char* WIFI_PASSWORD  = "hkmhkm1234566";
 const char* SERVER_HOST    = "192.168.8.194";
@@ -209,7 +212,7 @@ void enviar_http(const std::vector<Objetivo>& ranking, int total) {
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.addHeader("Content-Type", "application/json");
 
-    String json = "{\"firmware_version\":\"" + String(FIRMWARE_VERSION) + "\",\"pax\":" + String(total) + ",\"objetivos\":[";
+    String json = "{\"firmware_version\":\"" + String(FIRMWARE_VERSION) + "\",\"esp_id\":\"" + String(ESP_ID) + "\",\"esp_location\":\"" + String(ESP_LOCATION) + "\",\"pax\":" + String(total) + ",\"objetivos\":[";
     for (size_t i = 0; i < ranking.size(); i++) {
       json += "{";
       json += json_pair("id", ranking[i].id);
