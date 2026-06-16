@@ -8,10 +8,10 @@
 #include <HTTPClient.h>
 
 // ===== CONFIGURACION =====
-const char* WIFI_SSID      = "WifiAX";
+const char* WIFI_SSID      = "WifiAX2";
 const char* WIFI_PASSWORD  = "hkmhkm1234566";
-const char* SERVER_HOST    = "192.168.8.194";
-const uint16_t SERVER_PORT = 5000;
+const char* SERVER_HOST    = "192.168.31.112";
+const uint16_t SERVER_PORT = 8000;
 const char* SERVER_PATH    = "/api/report";
 
 constexpr unsigned long TIEMPO_BARRIDO = 10000;
