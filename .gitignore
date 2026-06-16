@@ -209,3 +209,6 @@ __marimo__/
 # PaxRadar local runtime state
 memoria_agente.json
 server.pid
+
+# Secrets del firmware (NO versionar)
+pax/secrets.h

@@ -1,5 +1,6 @@
 import html
 import hashlib
+import hmac
 import json
 import os
 import threading
@@ -19,6 +20,22 @@ except ImportError:
 load_dotenv()
 
 app = Flask(__name__)
+
+# Límite de tamaño de payload (anti-abuso). Configurable vía env.
+MAX_REPORT_BYTES = int(os.getenv("MAX_REPORT_BYTES", str(512 * 1024)))  # 512 KB
+app.config["MAX_CONTENT_LENGTH"] = MAX_REPORT_BYTES
+
+# Token compartido con los ESP (header X-Pax-Token). Vacío = endpoint abierto (no recomendado).
+PAX_API_TOKEN = os.getenv("PAX_API_TOKEN", "")
+
+# Tope de objetivos aceptados por reporte (defensa ante payloads anómalos).
+MAX_OBJETIVOS_POR_REPORTE = int(os.getenv("MAX_OBJETIVOS_POR_REPORTE", "256"))
+
+# Lock global para serializar el acceso a la memoria de entidades entre hilos.
+_report_lock = threading.Lock()
+
+# Antigüedad máxima de una entidad sin verse antes de purgarla (0 = nunca).
+ENTITY_DECAY_DAYS = float(os.getenv("ENTITY_DECAY_DAYS", "0"))
 
 APP_VERSION = "2.0.1"
 DB_PATH = os.getenv("PAX_MEMORY_PATH", "memoria_agente.json")
@@ -40,13 +57,47 @@ MONGO_SERVER_SELECTION_TIMEOUT_MS = int(os.getenv("MONGO_SERVER_SELECTION_TIMEOU
 ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "0")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_MIN_PROX = int(os.getenv("TELEGRAM_MIN_PROX", "60"))
+TELEGRAM_COOLDOWN_SECONDS = int(os.getenv("TELEGRAM_COOLDOWN_SECONDS", "300"))
 
+# ===== Memoria PAX en Mongo (colección aparte, separada de Sentinex/events) =====
+# Reutiliza MONGO_URI / MONGO_DB pero en su PROPIA colección.
+MONGO_MEMORY_COLLECTION = os.getenv("MONGO_MEMORY_COLLECTION", "pax_memory")
+MEMORY_DOC_ID = "pax_memory_state"
+
+# ===== Motor de detección local (reglas) =====
+# Las reglas SOLO etiquetan cada dispositivo (obj["alerts"]); NO mandan a Telegram
+# salvo que ENABLE_REALTIME_ALERTS=1. El canal Telegram lo maneja el cron de OpenAI.
+ENABLE_LOCAL_ANALYSIS = os.getenv("ENABLE_LOCAL_ANALYSIS", "1")
+ENABLE_REALTIME_ALERTS = os.getenv("ENABLE_REALTIME_ALERTS", "0")  # 0 = solo IA decide qué avisar
+ALERT_ON_UNKNOWN = os.getenv("ALERT_ON_UNKNOWN", "1")          # desconocido cerca
+ALERT_ON_RETURN = os.getenv("ALERT_ON_RETURN", "1")           # recurrente vuelve
+ALERT_ON_NIGHT = os.getenv("ALERT_ON_NIGHT", "1")            # anomalía horaria
+ALERT_ON_CROWD = os.getenv("ALERT_ON_CROWD", "1")            # aglomeración
+ALERT_RETURN_ABSENCE_MIN = int(os.getenv("ALERT_RETURN_ABSENCE_MIN", "30"))
+ALERT_CROWD_THRESHOLD = int(os.getenv("ALERT_CROWD_THRESHOLD", "15"))
+ALERT_QUIET_START = int(os.getenv("ALERT_QUIET_START", "0"))   # hora local inicio franja "rara"
+ALERT_QUIET_END = int(os.getenv("ALERT_QUIET_END", "6"))     # hora local fin franja "rara"
+ALERT_TZ_OFFSET = int(os.getenv("ALERT_TZ_OFFSET", "0"))      # offset horas vs UTC (ej. Chile -4)
+
+# ===== Análisis IA -> Telegram (canal principal de avisos) =====
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-AI_CRON_INTERVAL_HOURS = float(os.getenv("AI_CRON_INTERVAL_HOURS", "4"))
-AI_CRON_WINDOW_HOURS = float(os.getenv("AI_CRON_WINDOW_HOURS", "8"))
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "400"))
+OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.3"))
+AI_CRON_INTERVAL_HOURS = float(os.getenv("AI_CRON_INTERVAL_HOURS", "3"))   # corre cada 3 h
+AI_CRON_WINDOW_HOURS = float(os.getenv("AI_CRON_WINDOW_HOURS", "12"))      # mira 12 h atrás
 AI_ANALYSIS_PROMPT = os.getenv(
     "AI_ANALYSIS_PROMPT",
-    "Analiza patrones WiFi detectados: dispositivos recurrentes, horarios, anomalías. Responde en español, máximo 200 caracteres.",
+    (
+        "Eres el analista de PaxRadar, un sensor WiFi que detecta dispositivos por sus probe requests. "
+        "Recibes los eventos de las últimas horas con: id corto, nombre, proximidad (0-100), si es recurrente, "
+        "confianza, hora, y etiquetas de alerta (desconocido_cerca, recurrente_vuelve, anomalia_horaria, aglomeracion). "
+        "Tu tarea: detectar patrones y anomalías relevantes para seguridad doméstica y resumirlos para un aviso de Telegram. "
+        "Prioriza: desconocidos cercanos repetidos, recurrentes que reaparecen, actividad en horarios inusuales y aglomeraciones. "
+        "Sé concreto y breve (máximo ~600 caracteres), en español, sin inventar datos. "
+        "Si no hay nada relevante, responde exactamente: SIN_NOVEDAD."
+    ),
 )
 
 FIELD_WEIGHTS = {
@@ -78,6 +129,7 @@ STABLE_PROFILE_FIELDS = (
 
 mongo_client = None
 mongo_events_collection = None
+mongo_memory_collection = None
 
 if MONGO_URI and MongoClient:
     try:
@@ -87,10 +139,13 @@ if MONGO_URI and MongoClient:
         )
         mongo_client.admin.command("ping")
         mongo_events_collection = mongo_client[MONGO_DB_NAME][MONGO_EVENTS_COLLECTION]
+        # Colección PROPIA para la memoria PAX (entidades). Aislada de 'events'.
+        mongo_memory_collection = mongo_client[MONGO_DB_NAME][MONGO_MEMORY_COLLECTION]
     except Exception as exc:
         print(f"MongoDB Error: {exc}")
         mongo_client = None
         mongo_events_collection = None
+        mongo_memory_collection = None
 
 
 def mongo_events_enabled():
@@ -240,6 +295,116 @@ def send_telegram_alert(message: str):
         return False, "error"
 
 
+# ===== Motor de análisis local (reglas) + despacho de alertas =====
+_alert_cooldowns = {}
+_alert_lock = threading.Lock()
+
+
+def _local_hour(dt=None):
+    dt = dt or datetime.utcnow()
+    return (dt + timedelta(hours=ALERT_TZ_OFFSET)).hour
+
+
+def is_quiet_hour(hour=None):
+    hour = _local_hour() if hour is None else hour
+    start, end = ALERT_QUIET_START, ALERT_QUIET_END
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end  # franja que cruza medianoche
+
+
+def alert_cooldown_ok(key):
+    now = time.time()
+    with _alert_lock:
+        last = _alert_cooldowns.get(key, 0)
+        if now - last < TELEGRAM_COOLDOWN_SECONDS:
+            return False
+        _alert_cooldowns[key] = now
+        return True
+
+
+def dispatch_alert(key, message):
+    if not telegram_enabled():
+        return False
+    if not alert_cooldown_ok(key):
+        return False
+    ok, status = send_telegram_alert(message)
+    server_status["last_alert_at"] = now_iso()
+    server_status["last_alert_status"] = status
+    print(f">> Alerta Telegram key={key} ok={ok} status={status}")
+    return ok
+
+
+def analizar_objetivo(obj, prev_seen_last, esp_location):
+    """Reglas locales por dispositivo. SIEMPRE devuelve las etiquetas detectadas.
+    El envío directo a Telegram solo ocurre si ENABLE_REALTIME_ALERTS=1; de lo
+    contrario el canal Telegram lo maneja el cron de OpenAI (que usa estas etiquetas)."""
+    if ENABLE_LOCAL_ANALYSIS != "1":
+        return []
+
+    disparadas = []
+    realtime = ENABLE_REALTIME_ALERTS == "1"
+    nombre = obj.get("custom_name") or obj.get("display_id", "--")
+    prox = int(obj.get("prox", 0) or 0)
+    pattern_id = obj.get("pattern_id", "")
+    loc = esp_location or "?"
+    resumen = obj.get("signal_summary", "")
+
+    # 1) Desconocido cerca: nuevo (no recurrente) y con proximidad alta
+    if ALERT_ON_UNKNOWN == "1" and not obj.get("recurrent") and prox >= TELEGRAM_MIN_PROX:
+        disparadas.append("desconocido_cerca")
+        if realtime:
+            dispatch_alert(
+                f"unknown:{pattern_id}",
+                f"\U0001F7E5 <b>Desconocido cerca</b> ({loc})\n"
+                f"ID {nombre} · prox {prox}% · {resumen}",
+            )
+
+    # 2) Recurrente vuelve: conocido que reaparece tras una ausencia
+    if ALERT_ON_RETURN == "1" and obj.get("recurrent"):
+        prev = parse_iso(prev_seen_last)
+        ahora = parse_iso(obj.get("detected_at"))
+        if prev and ahora and (ahora - prev).total_seconds() / 60.0 >= ALERT_RETURN_ABSENCE_MIN:
+            gap_min = (ahora - prev).total_seconds() / 60.0
+            disparadas.append("recurrente_vuelve")
+            if realtime:
+                dispatch_alert(
+                    f"return:{pattern_id}",
+                    f"\U0001F7EA <b>Recurrente volvió</b> ({loc})\n"
+                    f"ID {nombre} · ausente {int(gap_min)} min · prox {prox}% "
+                    f"· visto {obj.get('seen_count', 1)}x",
+                )
+
+    # 3) Anomalía horaria: actividad cercana en franja inusual
+    if ALERT_ON_NIGHT == "1" and prox >= TELEGRAM_MIN_PROX and is_quiet_hour():
+        disparadas.append("anomalia_horaria")
+        if realtime:
+            dispatch_alert(
+                f"night:{pattern_id}",
+                f"\U0001F7E7 <b>Actividad en horario inusual</b> ({loc})\n"
+                f"ID {nombre} · {_local_hour():02d}h local · prox {prox}%",
+            )
+
+    return disparadas
+
+
+def analizar_aglomeracion(pax_total, esp_location):
+    if ENABLE_LOCAL_ANALYSIS != "1" or ALERT_ON_CROWD != "1":
+        return False
+    total = int(pax_total or 0)
+    if total < ALERT_CROWD_THRESHOLD:
+        return False
+    if ENABLE_REALTIME_ALERTS != "1":
+        return True  # detectado; lo reportará el cron de IA
+    return dispatch_alert(
+        "crowd",
+        f"\U0001F7E6 <b>Aglomeración</b> ({esp_location or '?'})\n"
+        f"{total} dispositivos en un ciclo (umbral {ALERT_CROWD_THRESHOLD})",
+    )
+
+
 def build_analysis_payload(window_hours):
     cutoff = datetime.utcnow() - timedelta(hours=window_hours)
     events = []
@@ -248,17 +413,21 @@ def build_analysis_payload(window_hours):
         try:
             rows = mongo_events_collection.find(
                 {"created_at": {"$gte": cutoff}},
-                {"display_id": 1, "prox": 1, "recurrent": 1, "confidence_label": 1,
-                 "detected_at": 1, "custom_name": 1},
-            ).sort("_id", -1).limit(120)
+                {"display_id": 1, "prox": 1, "recurrent": 1, "rotated": 1,
+                 "confidence_label": 1, "detected_at": 1, "custom_name": 1,
+                 "esp_location": 1, "payload.alerts": 1},
+            ).sort("_id", -1).limit(200)
             for row in rows:
                 events.append({
                     "id": row.get("display_id", "--"),
                     "name": row.get("custom_name", ""),
                     "prox": row.get("prox", 0),
                     "recurrent": row.get("recurrent", False),
+                    "rotated": row.get("rotated", False),
                     "conf": row.get("confidence_label", ""),
+                    "loc": row.get("esp_location", ""),
                     "at": row.get("detected_at", ""),
+                    "alerts": (row.get("payload", {}) or {}).get("alerts", []),
                 })
         except Exception as exc:
             print(f"AI cron: MongoDB query error: {exc}")
@@ -284,13 +453,13 @@ def call_openai_analysis(events, window_hours):
 
     user_msg = f"Ventana: últimas {window_hours}h. Datos: {json.dumps(events, ensure_ascii=False)}"
     payload = {
-        "model": "gpt-4.1-mini",
+        "model": OPENAI_MODEL,
         "messages": [
             {"role": "system", "content": AI_ANALYSIS_PROMPT},
             {"role": "user", "content": user_msg},
         ],
-        "max_tokens": 300,
-        "temperature": 0.3,
+        "max_tokens": OPENAI_MAX_TOKENS,
+        "temperature": OPENAI_TEMPERATURE,
     }
 
     try:
@@ -321,8 +490,11 @@ def run_ai_cron():
             if not analysis:
                 print(f"AI cron: análisis fallido ({ai_status})")
                 continue
+            if analysis.strip().upper().startswith("SIN_NOVEDAD"):
+                print(f"AI cron: IA reportó sin novedad ({len(events)} eventos), no se envía")
+                continue
             msg = (
-                f"<b>PaxRadar · Análisis IA</b>\n"
+                f"<b>PaxRadar · Análisis IA</b> ({OPENAI_MODEL})\n"
                 f"Ventana: {AI_CRON_WINDOW_HOURS}h · Eventos: {len(events)}\n\n"
                 f"{html.escape(analysis)}"
             )
@@ -776,14 +948,67 @@ def build_empty_memory():
     }
 
 
-def load_raw_memory():
+def prune_stale_entities(memory):
+    """Elimina entidades no vistas en más de ENTITY_DECAY_DAYS (0 = desactivado).
+    Devuelve cuántas se purgaron. Mantiene acotada la memoria con el tiempo."""
+    if ENTITY_DECAY_DAYS <= 0:
+        return 0
+    cutoff = datetime.utcnow() - timedelta(days=ENTITY_DECAY_DAYS)
+    entities = memory.get("entities", {})
+    stale = []
+    for entity_id, entity in entities.items():
+        seen = parse_iso(entity.get("seen_last"))
+        if seen and seen < cutoff:
+            stale.append(entity_id)
+    for entity_id in stale:
+        entities.pop(entity_id, None)
+    if stale:
+        print(f">> Purga de memoria: {len(stale)} entidades viejas (> {ENTITY_DECAY_DAYS}d)")
+    return len(stale)
+
+
+def mongo_memory_enabled():
+    return mongo_memory_collection is not None
+
+
+def _load_memory_from_json():
     if os.path.exists(DB_PATH):
         with open(DB_PATH, "r", encoding="utf-8") as file:
             return json.load(file)
     return build_empty_memory()
 
 
+def load_raw_memory():
+    # Preferimos Mongo (colección pax_memory). Si no hay Mongo, caemos al JSON local.
+    if mongo_memory_enabled():
+        try:
+            doc = mongo_memory_collection.find_one({"_id": MEMORY_DOC_ID})
+            if doc:
+                doc.pop("_id", None)
+                return doc
+            # Primera vez con Mongo: migramos el JSON existente si lo hay.
+            if os.path.exists(DB_PATH):
+                migrated = _load_memory_from_json()
+                save_memory(migrated)
+                print(f">> Memoria migrada de {DB_PATH} a Mongo ({MONGO_DB_NAME}.{MONGO_MEMORY_COLLECTION})")
+                return migrated
+            return build_empty_memory()
+        except Exception as exc:
+            print(f"MongoDB memory load error: {exc} (uso JSON local)")
+            return _load_memory_from_json()
+    return _load_memory_from_json()
+
+
 def save_memory(data):
+    if mongo_memory_enabled():
+        try:
+            doc = dict(data)
+            doc["_id"] = MEMORY_DOC_ID
+            doc["updated_at"] = datetime.utcnow()
+            mongo_memory_collection.replace_one({"_id": MEMORY_DOC_ID}, doc, upsert=True)
+            return
+        except Exception as exc:
+            print(f"MongoDB memory save error: {exc} (respaldo en JSON local)")
     with open(DB_PATH, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=4, ensure_ascii=False)
 
@@ -1094,6 +1319,22 @@ def build_signal_summary(features):
     return " · ".join(parts) if parts else "ritmo 1"
 
 
+def _ies_token_set(features):
+    return set(split_tokens(normalize_text(features.get("ies", "")), separator="-"))
+
+
+def _prefilter_candidate(features, entity_features):
+    """Descartador barato previo al cálculo completo de similitud.
+    Solo descarta cuando AMBOS lados tienen firma IE no vacía y NO comparten
+    ningún Information Element: en ese caso son stacks distintos y nunca
+    alcanzarían el umbral. Conservador: nunca descarta un match posible."""
+    a = _ies_token_set(features)
+    b = _ies_token_set(entity_features)
+    if not a or not b:
+        return True  # sin datos suficientes: comparar igual
+    return bool(a & b)
+
+
 def match_entity(memory, features, profile_id, current_id=""):
     best_entity = None
     best_score = 0.0
@@ -1104,9 +1345,13 @@ def match_entity(memory, features, profile_id, current_id=""):
         if current_id and current_id in entity.get("aliases", []):
             return entity, 1.0, True
 
+        entity_features = entity.get("features", {})
+        if not _prefilter_candidate(features, entity_features):
+            continue
+
         score, strong_fields = compare_feature_details(
             features,
-            entity.get("features", {}),
+            entity_features,
         )
         if score > best_score:
             second_best_score = best_score
@@ -1212,6 +1457,7 @@ def update_entity(entity, current_id, profile_id, features, score, matched_exist
 
 raw_memory = load_raw_memory()
 agente_memory = upgrade_memory(raw_memory)
+prune_stale_entities(agente_memory)
 save_memory(agente_memory)
 server_status = {
     "started_at": now_iso(),
@@ -1240,8 +1486,16 @@ def current_status():
         "telegram_min_prox": TELEGRAM_MIN_PROX,
         "omnistatus_enabled": ENABLE_OMNISTATUS == "1" and bool(OMNISTATUS_API),
         "mongo_events_enabled": mongo_events_enabled(),
+        "mongo_memory_enabled": mongo_memory_enabled(),
+        "local_analysis_enabled": ENABLE_LOCAL_ANALYSIS == "1",
+        "realtime_alerts_enabled": ENABLE_REALTIME_ALERTS == "1",
+        "ai_enabled": bool(OPENAI_API_KEY),
+        "ai_model": OPENAI_MODEL,
+        "ai_interval_hours": AI_CRON_INTERVAL_HOURS,
+        "ai_window_hours": AI_CRON_WINDOW_HOURS,
         "mongo_db": MONGO_DB_NAME if MONGO_URI else "",
         "mongo_events_collection": MONGO_EVENTS_COLLECTION if MONGO_URI else "",
+        "mongo_memory_collection": MONGO_MEMORY_COLLECTION if MONGO_URI else "",
         "mongo_event_count": mongo_event_count(),
         "last_mongo_event_at": server_status.get("last_mongo_event_at", ""),
         "last_mongo_event_status": server_status.get("last_mongo_event_status", "idle"),
@@ -1315,8 +1569,28 @@ def api_name():
 def api_report():
     global radar_data, agente_memory
 
+    # --- Autenticación por token compartido (comparación en tiempo constante) ---
+    if PAX_API_TOKEN:
+        provided = request.headers.get("X-Pax-Token", "")
+        if not hmac.compare_digest(provided, PAX_API_TOKEN):
+            return jsonify({"status": "unauthorized"}), 401
+
+    locked = False
     try:
-        data = request.get_json(force=True)
+        # --- Validación de entrada ---
+        data = request.get_json(force=True, silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"status": "bad_request", "error": "json invalido"}), 400
+        objetivos_in = data.get("objetivos", [])
+        if not isinstance(objetivos_in, list):
+            return jsonify({"status": "bad_request", "error": "objetivos debe ser lista"}), 400
+        if len(objetivos_in) > MAX_OBJETIVOS_POR_REPORTE:
+            data["objetivos"] = objetivos_in[:MAX_OBJETIVOS_POR_REPORTE]
+
+        # --- Sección crítica: acceso a la memoria de entidades serializado ---
+        _report_lock.acquire()
+        locked = True
+
         detected_at = now_iso()
         esp_id = data.get("esp_id", "")
         esp_location = data.get("esp_location", "")
@@ -1360,6 +1634,7 @@ def api_report():
                 memory_changed = True
 
             previous_aliases = set(entity.get("aliases", []))
+            prev_seen_last = entity.get("seen_last", "")
             if not association_pending:
                 update_entity(
                     entity,
@@ -1399,6 +1674,7 @@ def api_report():
             obj["custom_name"] = entity.get("custom_name", "")
             obj["seen_count"] = entity.get("seen_count", 1)
             obj["detected_at"] = detected_at
+            obj["alerts"] = analizar_objetivo(obj, prev_seen_last, esp_location)
             objetivos_procesados.append(obj)
 
             mongo_ok, mongo_status = save_omnistatus_event(
@@ -1417,6 +1693,8 @@ def api_report():
         if memory_changed:
             save_memory(agente_memory)
 
+        analizar_aglomeracion(data.get("pax", 0), esp_location)
+
         radar_data = {
             "pax": data.get("pax", 0),
             "objetivos": objetivos_procesados,
@@ -1427,7 +1705,19 @@ def api_report():
     except Exception as exc:
         print(f"Error: {exc}")
         return jsonify({"status": "error"}), 400
+    finally:
+        if locked:
+            _report_lock.release()
 
 
 if __name__ == "__main__":
+    # Canal principal de avisos: cron IA (OpenAI) -> Telegram.
+    # Las reglas locales solo etiquetan dispositivos y alimentan a la IA.
+    if OPENAI_API_KEY:
+        threading.Thread(target=run_ai_cron, daemon=True).start()
+        print(f">> Cron IA activo: {OPENAI_MODEL} cada {AI_CRON_INTERVAL_HOURS}h, ventana {AI_CRON_WINDOW_HOURS}h -> Telegram")
+    else:
+        print(">> Sin OPENAI_API_KEY: no hay avisos IA. (Activa ENABLE_REALTIME_ALERTS=1 para alertas directas por reglas)")
+
+    print(f">> Memoria PAX: {'Mongo ' + MONGO_DB_NAME + '.' + MONGO_MEMORY_COLLECTION if mongo_memory_enabled() else 'JSON ' + DB_PATH}")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))

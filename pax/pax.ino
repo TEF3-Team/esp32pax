@@ -6,17 +6,25 @@
 #include <vector>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include "secrets.h"   // credenciales locales (no versionado). Ver secrets.h.example
 
 // ===== CONFIGURACION =====
 const char* FIRMWARE_VERSION = "2.0.0";
 const char* ESP_ID           = "esp32-01";       // ID unico de este nodo
 const char* ESP_LOCATION     = "Casa_Celia";         // Ubicacion fisica
 
-const char* WIFI_SSID      = "WifiAX";
-const char* WIFI_PASSWORD  = "hkmhkm1234566";
-const char* SERVER_HOST    = "192.168.31.112";
-const uint16_t SERVER_PORT = 8000;
+// Credenciales y endpoint: se definen en secrets.h
+const char* WIFI_SSID      = SECRET_WIFI_SSID;
+const char* WIFI_PASSWORD  = SECRET_WIFI_PASSWORD;
+const char* SERVER_HOST    = SECRET_SERVER_HOST;
+const uint16_t SERVER_PORT = SECRET_SERVER_PORT;
 const char* SERVER_PATH    = "/api/report";
+const char* PAX_API_TOKEN  = SECRET_PAX_API_TOKEN;  // header X-Pax-Token
+
+// Reintentos de envio: si el POST falla, se reencolan ciclos para no perder datos
+constexpr uint8_t MAX_PENDING_CYCLES = 6;   // ciclos en buffer RAM
+constexpr uint8_t MAX_SEND_ATTEMPTS  = 3;   // intentos por envio
+constexpr uint16_t RETRY_BASE_MS     = 800; // backoff base (se duplica por intento)
 
 constexpr unsigned long TIEMPO_BARRIDO = 10000;
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
@@ -200,73 +208,143 @@ void imprimir_fingerprint(const Objetivo& o) {
 }
 
 // --- Comunicación ---
+// Cola de payloads que no se pudieron enviar (se reintentan en el siguiente ciclo).
+std::vector<String> pendientes;
+
+// Escapa los caracteres especiales de JSON para no romper el payload.
+String json_escape(const String& value) {
+  String out;
+  out.reserve(value.length() + 4);
+  for (size_t i = 0; i < value.length(); i++) {
+    char c = value.charAt(i);
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n";  break;
+      case '\r': out += "\\r";  break;
+      case '\t': out += "\\t";  break;
+      default:
+        if ((uint8_t)c < 0x20) {
+          char buf[7];
+          sprintf(buf, "\\u%04x", (uint8_t)c);
+          out += buf;
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out;
+}
+
 String json_pair(const char* key, const String& value) {
-  return String("\"") + key + "\":\"" + value + "\"";
+  return String("\"") + key + "\":\"" + json_escape(value) + "\"";
 }
 
 String json_pair(const char* key, int value) {
   return String("\"") + key + "\":" + String(value);
 }
 
+// Construye el payload JSON completo de un ciclo.
+String construir_payload(const std::vector<Objetivo>& ranking, int total) {
+  String json = "{\"firmware_version\":\"" + json_escape(String(FIRMWARE_VERSION)) +
+                "\",\"esp_id\":\"" + json_escape(String(ESP_ID)) +
+                "\",\"esp_location\":\"" + json_escape(String(ESP_LOCATION)) +
+                "\",\"pax\":" + String(total) + ",\"objetivos\":[";
+  for (size_t i = 0; i < ranking.size(); i++) {
+    json += "{";
+    json += json_pair("id", ranking[i].id);
+    json += "," + json_pair("prox", ranking[i].prox);
+    json += "," + json_pair("rssi", ranking[i].rssi);
+    json += "," + json_pair("ies", ranking[i].ieSignature);
+    json += "," + json_pair("rates", ranking[i].rates);
+    json += "," + json_pair("xrates", ranking[i].extRates);
+    json += "," + json_pair("vendors", ranking[i].vendorOUIs);
+    json += "," + json_pair("extcaps", ranking[i].extCaps);
+    json += "," + json_pair("htcaps", ranking[i].htCaps);
+    json += "," + json_pair("vhtcaps", ranking[i].vhtCaps);
+    json += "," + json_pair("rsn", ranking[i].rsn);
+    json += "," + json_pair("extids", ranking[i].extIds);
+    json += "," + json_pair("observed_channels", ranking[i].observedChannels);
+    json += "," + json_pair("probes", ranking[i].probeCount);
+    json += "," + json_pair("wildcards", ranking[i].wildcardCount);
+    json += "," + json_pair("channel", ranking[i].channel);
+    json += "}";
+    if (i < ranking.size() - 1) json += ",";
+  }
+  json += "]}";
+  return json;
+}
+
+// Postea un payload con reintentos y backoff. Asume WiFi ya conectado.
+bool postear_json(const String& body) {
+  String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT + SERVER_PATH;
+  for (uint8_t intento = 1; intento <= MAX_SEND_ATTEMPTS; intento++) {
+    HTTPClient http;
+    http.begin(url);
+    http.setTimeout(HTTP_TIMEOUT_MS);
+    http.addHeader("Content-Type", "application/json");
+    if (strlen(PAX_API_TOKEN) > 0) http.addHeader("X-Pax-Token", PAX_API_TOKEN);
+
+    int code = http.POST(body);
+    Serial.printf(">> POST intento %u/%u -> code %d\n", intento, MAX_SEND_ATTEMPTS, code);
+    http.end();
+
+    if (code >= 200 && code < 300) return true;
+    if (code == 401 || code == 403) {
+      Serial.println(">> Token rechazado (401/403): revisa PAX_API_TOKEN. No reintento.");
+      return false;  // reintentar no ayuda con auth invalida
+    }
+    if (intento < MAX_SEND_ATTEMPTS) delay(RETRY_BASE_MS * intento);  // backoff lineal
+  }
+  return false;
+}
+
+// Encola un payload fallido para reintentar luego (buffer acotado en RAM).
+void encolar_pendiente(const String& body) {
+  if (pendientes.size() >= MAX_PENDING_CYCLES) {
+    pendientes.erase(pendientes.begin());  // descarta el mas viejo
+    Serial.println(">> Buffer lleno: descarto el ciclo mas antiguo");
+  }
+  pendientes.push_back(body);
+  Serial.printf(">> Ciclo encolado. Pendientes=%u\n", (unsigned)pendientes.size());
+}
+
 void enviar_http(const std::vector<Objetivo>& ranking, int total) {
   Serial.println(">> Conectando WiFi...");
   esp_wifi_set_promiscuous(false);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
+
   unsigned long t = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t < WIFI_CONNECT_TIMEOUT_MS) delay(100);
 
+  String payload = construir_payload(ranking, total);
+  Serial.print(">> Payload bytes: ");
+  Serial.println(payload.length());
+
   if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT + SERVER_PATH;
-    Serial.print(">> WiFi IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.print(">> Gateway: ");
-    Serial.println(WiFi.gatewayIP());
-    Serial.print(">> POST URL: ");
-    Serial.println(url);
-    http.begin(url);
-    http.setTimeout(HTTP_TIMEOUT_MS);
-    http.addHeader("Content-Type", "application/json");
+    Serial.print(">> WiFi IP: ");   Serial.println(WiFi.localIP());
+    Serial.print(">> POST URL: http://"); Serial.printf("%s:%u%s\n", SERVER_HOST, SERVER_PORT, SERVER_PATH);
 
-    String json = "{\"firmware_version\":\"" + String(FIRMWARE_VERSION) + "\",\"esp_id\":\"" + String(ESP_ID) + "\",\"esp_location\":\"" + String(ESP_LOCATION) + "\",\"pax\":" + String(total) + ",\"objetivos\":[";
-    for (size_t i = 0; i < ranking.size(); i++) {
-      json += "{";
-      json += json_pair("id", ranking[i].id);
-      json += "," + json_pair("prox", ranking[i].prox);
-      json += "," + json_pair("rssi", ranking[i].rssi);
-      json += "," + json_pair("ies", ranking[i].ieSignature);
-      json += "," + json_pair("rates", ranking[i].rates);
-      json += "," + json_pair("xrates", ranking[i].extRates);
-      json += "," + json_pair("vendors", ranking[i].vendorOUIs);
-      json += "," + json_pair("extcaps", ranking[i].extCaps);
-      json += "," + json_pair("htcaps", ranking[i].htCaps);
-      json += "," + json_pair("vhtcaps", ranking[i].vhtCaps);
-      json += "," + json_pair("rsn", ranking[i].rsn);
-      json += "," + json_pair("extids", ranking[i].extIds);
-      json += "," + json_pair("observed_channels", ranking[i].observedChannels);
-      json += "," + json_pair("probes", ranking[i].probeCount);
-      json += "," + json_pair("wildcards", ranking[i].wildcardCount);
-      json += "," + json_pair("channel", ranking[i].channel);
-      json += "}";
-      if (i < ranking.size() - 1) json += ",";
+    // 1) Vaciar primero la cola de ciclos pendientes (FIFO).
+    while (!pendientes.empty()) {
+      if (postear_json(pendientes.front())) {
+        pendientes.erase(pendientes.begin());
+      } else {
+        Serial.println(">> No se pudo vaciar la cola, lo dejo para el proximo ciclo");
+        break;
+      }
     }
-    json += "]}";
 
-    Serial.print(">> Payload bytes: ");
-    Serial.println(json.length());
-    int code = http.POST(json);
-    Serial.printf(">> API Code: %d\n", code);
-    if (code <= 0) {
-      Serial.print(">> HTTP Error: ");
-      Serial.println(http.errorToString(code));
+    // 2) Enviar el ciclo actual; si falla, encolar.
+    if (!postear_json(payload)) {
+      encolar_pendiente(payload);
     }
-    http.end();
   } else {
     Serial.print(">> Error WiFi, status: ");
     Serial.println(WiFi.status());
+    encolar_pendiente(payload);  // sin red: no perdemos el ciclo
   }
-  
+
   WiFi.disconnect();
   iniciar_sniffer();
 }
