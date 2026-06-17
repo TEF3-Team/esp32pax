@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tail -30 /tmp/paxradar.log)",
+      "Read(//tmp/**)",
+      "Bash(curl -s http://127.0.0.1:8000/api/status)",
+      "Bash(curl -s http://127.0.0.1:8000/api/data)",
+      "Bash(curl -v http://127.0.0.1:8000/api/data)",
+      "Bash(arp -a)",
+      "Bash(curl -s http://192.168.31.162:8000/api/data)",
+      "Bash(chmod +x /Users/oscaraguilera/Desktop/esp32Pax/start_server.sh)",
+      "Bash(launchctl load *)",
+      "Bash(launchctl unload *)",
+      "Bash(rm /Users/oscaraguilera/Library/LaunchAgents/com.paxradar.server.plist)",
+      "Bash(find /Users/oscaraguilera -maxdepth 2 -name \"*.sh\" 2>/dev/null)",
+      "Read(//Users/oscaraguilera/**)"
+    ],
+    "additionalDirectories": [
+      "/Users/oscaraguilera/Library/LaunchAgents",
+      "/Users/oscaraguilera"
+    ]
+  }
+}

@@ -26,12 +26,12 @@ constexpr uint8_t MAX_PENDING_CYCLES = 6;   // ciclos en buffer RAM
 constexpr uint8_t MAX_SEND_ATTEMPTS  = 3;   // intentos por envio
 constexpr uint16_t RETRY_BASE_MS     = 800; // backoff base (se duplica por intento)
 
-constexpr unsigned long TIEMPO_BARRIDO = 10000;
+constexpr unsigned long TIEMPO_BARRIDO = 20000;          // 20 s de captura (más tiempo = más chances de pillar iOS)
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
 constexpr uint16_t HTTP_TIMEOUT_MS = 5000;
 constexpr int MIN_PROBE_PACKET_LEN = 26;
-constexpr unsigned long CHANNEL_DWELL_MS = 350;
-constexpr uint8_t SNIFFER_CHANNELS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+constexpr unsigned long CHANNEL_DWELL_MS = 200;           // más rápido entre canales = más sweeps completos
+constexpr uint8_t SNIFFER_CHANNELS[] = {1, 6, 11, 2, 7, 3, 8, 4, 9, 5, 10};
 constexpr size_t SNIFFER_CHANNEL_COUNT = sizeof(SNIFFER_CHANNELS) / sizeof(SNIFFER_CHANNELS[0]);
 
 // Estructuras de datos
@@ -166,15 +166,19 @@ void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
 }
 
 void iniciar_sniffer() {
-  WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  WiFi.mode(WIFI_STA);
+  delay(150);
+
   esp_wifi_set_promiscuous(false);
   esp_wifi_set_promiscuous_rx_cb(&sniffer);
-  indice_canal = 0;
-  esp_wifi_set_channel(SNIFFER_CHANNELS[indice_canal], WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(true);
+  delay(150);
+
+  indice_canal = 0;
+  esp_err_t err = esp_wifi_set_channel(SNIFFER_CHANNELS[indice_canal], WIFI_SECOND_CHAN_NONE);
+  Serial.printf(">> Sniffer ON, canal %u (err=%d)\n", SNIFFER_CHANNELS[indice_canal], (int)err);
   ultimo_salto_canal = millis();
-  Serial.printf(">> Sniffer ON, canal %u\n", SNIFFER_CHANNELS[indice_canal]);
 }
 
 void actualizar_canal_sniffer() {

@@ -39,19 +39,17 @@ ENTITY_DECAY_DAYS = float(os.getenv("ENTITY_DECAY_DAYS", "0"))
 
 APP_VERSION = "2.0.1"
 DB_PATH = os.getenv("PAX_MEMORY_PATH", "memoria_agente.json")
-SIMILARITY_MATCH_THRESHOLD = 0.86
-MIN_STRONG_FEATURE_MATCHES = 3
-MIN_MATCH_MARGIN = 0.05
+SIMILARITY_MATCH_THRESHOLD = 0.72
+MIN_STRONG_FEATURE_MATCHES = 2
+MIN_MATCH_MARGIN = 0.03
 ALIAS_CONFIRMATION_HITS = 2
 MAX_FEATURE_SAMPLES = 20
 PENDING_MATCH_TTL = timedelta(minutes=5)
 
-ENABLE_OMNISTATUS = os.getenv("ENABLE_OMNISTATUS", "0")
-OMNISTATUS_API = os.getenv("OMNISTATUS_ENDPOINT", "")
 
 MONGO_URI = os.getenv("MONGO_URI", "")
-MONGO_DB_NAME = os.getenv("MONGO_DB", "omnistatus")
-MONGO_EVENTS_COLLECTION = os.getenv("MONGO_EVENTS_COLLECTION", "events")
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", os.getenv("MONGO_DB", "omnistatus"))
+MONGO_PAX_EVENTS_COLLECTION = os.getenv("MONGO_PAX_EVENTS_COLLECTION", "pax_events")
 MONGO_SERVER_SELECTION_TIMEOUT_MS = int(os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS", "2500"))
 
 ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "0")
@@ -128,7 +126,7 @@ STABLE_PROFILE_FIELDS = (
 
 
 mongo_client = None
-mongo_events_collection = None
+mongo_pax_events_collection = None
 mongo_memory_collection = None
 
 if MONGO_URI and MongoClient:
@@ -138,134 +136,53 @@ if MONGO_URI and MongoClient:
             serverSelectionTimeoutMS=MONGO_SERVER_SELECTION_TIMEOUT_MS,
         )
         mongo_client.admin.command("ping")
-        mongo_events_collection = mongo_client[MONGO_DB_NAME][MONGO_EVENTS_COLLECTION]
-        # Colección PROPIA para la memoria PAX (entidades). Aislada de 'events'.
+        mongo_pax_events_collection = mongo_client[MONGO_DB_NAME][MONGO_PAX_EVENTS_COLLECTION]
         mongo_memory_collection = mongo_client[MONGO_DB_NAME][MONGO_MEMORY_COLLECTION]
+        print(f">> MongoDB: {MONGO_DB_NAME}.{MONGO_PAX_EVENTS_COLLECTION} (eventos PAX)")
     except Exception as exc:
         print(f"MongoDB Error: {exc}")
         mongo_client = None
-        mongo_events_collection = None
+        mongo_pax_events_collection = None
         mongo_memory_collection = None
 
 
 def mongo_events_enabled():
-    return mongo_events_collection is not None
+    return mongo_pax_events_collection is not None
 
 
 def mongo_event_count():
-    if mongo_events_collection is None:
+    if mongo_pax_events_collection is None:
         return 0
     try:
-        return mongo_events_collection.count_documents({})
+        return mongo_pax_events_collection.count_documents({})
     except Exception as exc:
         print(f"MongoDB count error: {exc}")
         return 0
 
 
-def recent_omnistatus_events(limit=12):
-    if mongo_events_collection is None:
-        return []
-
-    try:
-        rows = mongo_events_collection.find(
-            {},
-            {
-                "source": 1,
-                "text": 1,
-                "score": 1,
-                "detected_at": 1,
-                "created_at": 1,
-                "pattern_id": 1,
-                "display_id": 1,
-                "prox": 1,
-                "confidence_label": 1,
-            },
-        ).sort("_id", -1).limit(limit)
-
-        events = []
-        for row in rows:
-            created_at = row.get("created_at", "")
-            if isinstance(created_at, datetime):
-                created_at = created_at.replace(microsecond=0).isoformat() + "Z"
-
-            events.append({
-                "source": row.get("source", ""),
-                "text": row.get("text", ""),
-                "score": row.get("score", 0),
-                "detected_at": row.get("detected_at", ""),
-                "created_at": created_at,
-                "pattern_id": row.get("pattern_id", ""),
-                "display_id": row.get("display_id", "--"),
-                "prox": row.get("prox", 0),
-                "confidence_label": row.get("confidence_label", ""),
-            })
-        return events
-    except Exception as exc:
-        print(f"MongoDB recent events error: {exc}")
-        return []
-
-
-def save_omnistatus_event(event):
-    if not MONGO_URI:
-        return False, "disabled"
-    if not MongoClient:
-        return False, "missing_pymongo"
-    if mongo_events_collection is None:
-        return False, "unavailable"
-
-    try:
-        mongo_events_collection.insert_one(event)
-        return True, "saved"
-    except Exception as exc:
-        print(f"MongoDB event save error: {exc}")
-        return False, "error"
-
-
-def build_omnistatus_event(obj, score, detected_at, esp_id="", esp_location=""):
-    source = f"PaxRadar-{obj.get('display_id', '--')}"
-    text = obj.get("signal_summary", "")
-    return {
-        "source": source,
-        "text": text,
-        "score": score,
-        "service": "PaxRadar",
-        "type": "pax_radar_detection",
-        "detected_at": detected_at,
-        "created_at": datetime.utcnow(),
-        "esp_id": esp_id,
-        "esp_location": esp_location,
-        "pattern_id": obj.get("pattern_id", ""),
-        "profile_id": obj.get("profile_id", ""),
-        "display_id": obj.get("display_id", "--"),
-        "custom_name": obj.get("custom_name", ""),
-        "prox": int(obj.get("prox", 0) or 0),
-        "score_pct": obj.get("score_pct", 0),
-        "confidence_label": obj.get("confidence_label", "Baja"),
-        "recurrent": bool(obj.get("recurrent")),
-        "rotated": bool(obj.get("rotated")),
-        "payload": obj.copy(),
-    }
-
-
-def inject_omnistatus(source: str, text: str, score: float):
-    if ENABLE_OMNISTATUS != "1" or not OMNISTATUS_API:
+def save_pax_event(obj, score, detected_at, esp_id="", esp_location=""):
+    if mongo_pax_events_collection is None:
         return
-
-    target_url = OMNISTATUS_API
-    if not target_url.endswith("/event") and not target_url.endswith("/events"):
-        target_url = target_url.rstrip("/") + "/event"
-
     try:
-        payload = {"source": source, "text": text, "score": score}
-        r = requests.post(target_url, json=payload, timeout=5)
+        mongo_pax_events_collection.insert_one({
+            "detected_at": detected_at,
+            "created_at": datetime.utcnow(),
+            "esp_id": esp_id,
+            "esp_location": esp_location,
+            "pattern_id": obj.get("pattern_id", ""),
+            "display_id": obj.get("display_id", "--"),
+            "custom_name": obj.get("custom_name", ""),
+            "prox": int(obj.get("prox", 0) or 0),
+            "score_pct": obj.get("score_pct", 0),
+            "confidence_label": obj.get("confidence_label", "Baja"),
+            "recurrent": bool(obj.get("recurrent")),
+            "alerts": obj.get("alerts", []),
+            "signal_summary": obj.get("signal_summary", ""),
+        })
+    except Exception as exc:
+        print(f"pax_events save error: {exc}")
 
-        if r.status_code == 422:
-            print(f"OmniStatus 422 Unprocessable Entity! Response: {r.text} | Payload: {json.dumps(payload)}")
-        elif r.status_code != 200:
-            print(f"OmniStatus returned {r.status_code}: {r.text}")
 
-    except Exception as e:
-        print(f"OmniStatus Error: {e}")
 
 
 def telegram_enabled():
@@ -409,25 +326,24 @@ def build_analysis_payload(window_hours):
     cutoff = datetime.utcnow() - timedelta(hours=window_hours)
     events = []
 
-    if mongo_events_collection is not None:
+    if mongo_pax_events_collection is not None:
         try:
-            rows = mongo_events_collection.find(
+            rows = mongo_pax_events_collection.find(
                 {"created_at": {"$gte": cutoff}},
-                {"display_id": 1, "prox": 1, "recurrent": 1, "rotated": 1,
+                {"display_id": 1, "prox": 1, "recurrent": 1,
                  "confidence_label": 1, "detected_at": 1, "custom_name": 1,
-                 "esp_location": 1, "payload.alerts": 1},
-            ).sort("_id", -1).limit(200)
+                 "esp_location": 1, "alerts": 1},
+            ).sort("_id", -1).limit(500)
             for row in rows:
                 events.append({
                     "id": row.get("display_id", "--"),
                     "name": row.get("custom_name", ""),
                     "prox": row.get("prox", 0),
                     "recurrent": row.get("recurrent", False),
-                    "rotated": row.get("rotated", False),
                     "conf": row.get("confidence_label", ""),
                     "loc": row.get("esp_location", ""),
                     "at": row.get("detected_at", ""),
-                    "alerts": (row.get("payload", {}) or {}).get("alerts", []),
+                    "alerts": row.get("alerts", []),
                 })
         except Exception as exc:
             print(f"AI cron: MongoDB query error: {exc}")
@@ -844,60 +760,82 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                     <div class="chips">${featureChips(o)}</div>
-                    <div class="meta">Patron: ${esc(o.pattern_id)}</div>
-                    <div class="meta">Huella: ${esc(o.profile_id)}</div>
+                    <div class="meta">ID patrón: ${esc(o.pattern_id)}</div>
+                    <div class="meta">Perfil: ${esc(o.profile_id)}</div>
                     ${seenCountHtml}
-                    <div class="meta">Fecha: ${detectedAt}</div>
+                    <div class="meta">Detectado: ${detectedAt}</div>
                     <div class="meta">Confianza: ${esc(o.confidence_label)} (${esc(o.score_pct)}%)</div>
-                    <div class="detail">MAC completa: ${esc(fullId || "--")}</div>
-                    <div class="detail">IEs: ${esc(o.ies || "--")}</div>
-                    <div class="detail">Senales: ${esc(o.signal_summary)}</div>
-                    <div class="hint">Estas pistas ayudan a reconocer y nombrar un celular recurrente; por MAC aleatoria no garantizan marca o modelo exacto.</div>
+                    <div class="detail">MAC: ${esc(fullId || "--")}</div>
+                    <div class="detail">Señales: ${esc(o.signal_summary)}</div>
                 </div>
             `;
         }
 
+        const GRID_TTL_MS = 90000; // 90 s sin reporte → pasa a historial
+
+        function agoStr(ms) {
+            if (ms < 60000) return Math.round(ms / 1000) + 's';
+            return Math.round(ms / 60000) + 'min';
+        }
+
         setInterval(() => {
             fetch('/api/data').then(r => r.json()).then(data => {
-                document.getElementById('pax').innerText = data.pax;
+                const now = Date.now();
+                const objetivos = data.objetivos || [];
+                const live = [], departed = [];
+
+                objetivos.forEach(o => {
+                    const age = now - new Date(o.detected_at).getTime();
+                    if (age <= GRID_TTL_MS) live.push({...o, _age: age});
+                    else departed.push({...o, _age: age});
+                });
+
+                document.getElementById('pax').innerText = live.length;
                 let newFound = false;
 
                 document.getElementById('grid').innerHTML =
-                    data.objetivos.map(o => {
+                    live.map(o => {
                         if (!knownIds.has(o.pattern_id)) {
                             knownIds.add(o.pattern_id);
                             if (!o.recurrent) newFound = true;
                         }
                         return renderCard(o);
-                    }).join('') || 'Buscando señales...';
+                    }).join('') || '<div style="color:var(--muted);padding:20px">Sin señales activas</div>';
 
                 if (newFound) playBeep();
 
                 if (data.status) {
-                    const tg = data.status.telegram_enabled ? "Telegram ON" : "Telegram OFF";
-                    const mongo = data.status.mongo_events_enabled ? "Mongo ON (" + (data.status.mongo_event_count || 0) + ")" : "Mongo OFF";
-                    document.getElementById('status-line').innerText = tg + " · " + mongo + " · ultimo reporte: " + (data.status.last_report_at || "--") + " · evento: " + (data.status.last_mongo_event_status || "--");
+                    const tg = data.status.telegram_enabled ? "Telegram activo" : "Telegram sin configurar";
+                    const ai = data.status.ai_enabled
+                        ? "Análisis cada " + data.status.ai_interval_hours + "h"
+                        : "OpenAI sin configurar";
+                    const mongo = data.status.mongo_events_enabled
+                        ? "Mongo: " + (data.status.mongo_event_count || 0) + " eventos"
+                        : "Mongo desconectado";
+                    const ultimo = data.status.last_report_at
+                        ? new Date(data.status.last_report_at).toLocaleTimeString()
+                        : "sin reportes";
+                    document.getElementById('status-line').innerText =
+                        tg + "  ·  " + ai + "  ·  " + mongo + "  ·  Último reporte: " + ultimo;
                 }
 
-                if (data.recent) {
-                    const html = data.recent.map(r => {
-                        const timeObj = new Date(r.seen_last);
-                        const timeStr = timeObj.toLocaleString();
-                        const nameDisplay = r.custom_name ? `<span style="color:var(--accent)">${r.custom_name}</span>` : `ID: ${r.display_id}`;
-                        return `<div class="log-item"><span style="color:var(--muted)">[${timeStr}]</span> ${nameDisplay} <br><span style="color:var(--muted)">Visto: ${r.seen_count} veces</span></div>`;
-                    }).join('');
-                    document.getElementById('recent-list').innerHTML = html;
-                }
+                // Sidebar: historial de memoria + fuera de rango reciente
+                const recentHtml = (data.recent || []).map(r => {
+                    const t = new Date(r.seen_last).toLocaleTimeString();
+                    const name = r.custom_name
+                        ? `<span style="color:var(--accent)">${r.custom_name}</span>`
+                        : `ID: ${r.display_id}`;
+                    return `<div class="log-item"><span style="color:var(--muted)">[${t}]</span> ${name}<br><span style="color:var(--muted)">Visto ${r.seen_count} veces</span></div>`;
+                }).join('');
 
-                if (data.mongo_recent) {
-                    const mongoHtml = data.mongo_recent.map(e => {
-                        const when = e.detected_at || e.created_at || "";
-                        const timeStr = when ? new Date(when).toLocaleString() : "--";
-                        const label = e.source || "PaxRadar-" + (e.display_id || "--");
-                        return `<div class="log-item"><span style="color:var(--muted)">[${timeStr}]</span> ${label}<br><span style="color:var(--accent)">${e.prox || 0}% · ${e.confidence_label || "--"}</span><br><span style="color:var(--muted)">${e.text || "sin detalle"}</span></div>`;
-                    }).join('') || '<div class="log-item">Sin eventos en Mongo todavía</div>';
-                    document.getElementById('mongo-events-list').innerHTML = mongoHtml;
-                }
+                const departedHtml = departed.map(o => {
+                    const name = o.custom_name || o.display_id || '--';
+                    return `<div class="log-item" style="opacity:0.6"><span style="color:var(--muted)">hace ${agoStr(o._age)}</span> ${esc(name)}<br><span style="color:var(--muted)">${o.prox}% · ${o.confidence_label}</span></div>`;
+                }).join('');
+
+                document.getElementById('recent-list').innerHTML =
+                    (departedHtml ? '<div style="color:var(--warn);font-size:0.8em;margin-bottom:6px">Fuera de rango</div>' + departedHtml + '<div style="border-top:1px solid #333;margin:8px 0"></div>' : '')
+                    + (recentHtml || '<div style="color:var(--muted)">—</div>');
             });
         }, 1000);
     </script>
@@ -914,11 +852,7 @@ HTML_TEMPLATE = """
         <div id="grid" class="grid"></div>
         <div class="sidebar">
             <h3 class="section-title">Últimas Detecciones</h3>
-            <div id="recent-list">Esperando datos...</div>
-            <div class="side-section">
-                <h3 class="section-title">Eventos OmniStatus</h3>
-                <div id="mongo-events-list">Esperando eventos...</div>
-            </div>
+            <div id="recent-list">—</div>
         </div>
     </div>
 </body>
@@ -1484,7 +1418,6 @@ def current_status():
         "last_alert_status": server_status.get("last_alert_status", "idle"),
         "telegram_enabled": telegram_enabled(),
         "telegram_min_prox": TELEGRAM_MIN_PROX,
-        "omnistatus_enabled": ENABLE_OMNISTATUS == "1" and bool(OMNISTATUS_API),
         "mongo_events_enabled": mongo_events_enabled(),
         "mongo_memory_enabled": mongo_memory_enabled(),
         "local_analysis_enabled": ENABLE_LOCAL_ANALYSIS == "1",
@@ -1494,7 +1427,7 @@ def current_status():
         "ai_interval_hours": AI_CRON_INTERVAL_HOURS,
         "ai_window_hours": AI_CRON_WINDOW_HOURS,
         "mongo_db": MONGO_DB_NAME if MONGO_URI else "",
-        "mongo_events_collection": MONGO_EVENTS_COLLECTION if MONGO_URI else "",
+        "mongo_events_collection": MONGO_PAX_EVENTS_COLLECTION if MONGO_URI else "",
         "mongo_memory_collection": MONGO_MEMORY_COLLECTION if MONGO_URI else "",
         "mongo_event_count": mongo_event_count(),
         "last_mongo_event_at": server_status.get("last_mongo_event_at", ""),
@@ -1517,7 +1450,6 @@ def api_data():
             "pattern_id": e.get("entity_id", "")
         })
     radar_data["recent"] = recent
-    radar_data["mongo_recent"] = recent_omnistatus_events()
     radar_data["status"] = current_status()
     return jsonify(radar_data)
 
@@ -1676,19 +1608,7 @@ def api_report():
             obj["detected_at"] = detected_at
             obj["alerts"] = analizar_objetivo(obj, prev_seen_last, esp_location)
             objetivos_procesados.append(obj)
-
-            mongo_ok, mongo_status = save_omnistatus_event(
-                build_omnistatus_event(obj, score, detected_at, esp_id, esp_location)
-            )
-            server_status["last_mongo_event_status"] = mongo_status
-            if mongo_ok:
-                server_status["last_mongo_event_at"] = detected_at
-
-            inject_omnistatus(
-                source=f"PaxRadar-{obj['display_id']}",
-                text=obj["signal_summary"],
-                score=score
-            )
+            save_pax_event(obj, score, detected_at, esp_id, esp_location)
 
         if memory_changed:
             save_memory(agente_memory)
