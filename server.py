@@ -395,8 +395,8 @@ def call_openai_analysis(events, window_hours):
 
 
 def run_ai_cron():
+    time.sleep(300)  # espera 5 min al arrancar para que el ESP tenga tiempo de mandar datos
     while True:
-        time.sleep(AI_CRON_INTERVAL_HOURS * 3600)
         try:
             events = build_analysis_payload(AI_CRON_WINDOW_HOURS)
             if not events:
@@ -420,6 +420,7 @@ def run_ai_cron():
             server_status["last_alert_status"] = tg_status
         except Exception as exc:
             print(f"AI cron error: {exc}")
+        time.sleep(AI_CRON_INTERVAL_HOURS * 3600)
 
 
 HTML_TEMPLATE = """
