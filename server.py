@@ -367,7 +367,14 @@ def call_openai_analysis(events, window_hours):
     if not OPENAI_API_KEY:
         return None, "no_api_key"
 
-    user_msg = f"Ventana: últimas {window_hours}h. Datos: {json.dumps(events, ensure_ascii=False)}"
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    user_msg = (
+        f"Fecha y hora actual: {now_str}. "
+        f"Ventana analizada: últimas {window_hours}h. "
+        f"Nota: los campos 'at' de los eventos pueden tener timestamps incorrectos, "
+        f"usa la fecha y hora actual como referencia real. "
+        f"Datos: {json.dumps(events, ensure_ascii=False)}"
+    )
     payload = {
         "model": OPENAI_MODEL,
         "messages": [
