@@ -83,8 +83,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "400"))
 OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.3"))
-AI_CRON_INTERVAL_HOURS = float(os.getenv("AI_CRON_INTERVAL_HOURS", "3"))   # corre cada 3 h
-AI_CRON_WINDOW_HOURS = float(os.getenv("AI_CRON_WINDOW_HOURS", "12"))      # mira 12 h atrás
+AI_CRON_INTERVAL_HOURS = float(os.getenv("COMPLEX_ANALYSIS_CRON_HOURS", "3"))
+AI_CRON_WINDOW_HOURS = float(os.getenv("COMPLEX_ANALYSIS_LOOKBACK_HOURS", "12"))
 AI_ANALYSIS_PROMPT = os.getenv(
     "AI_ANALYSIS_PROMPT",
     (
