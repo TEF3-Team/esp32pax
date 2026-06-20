@@ -1,4 +1,5 @@
 #include "esp_wifi.h"
+#include "esp_task_wdt.h"
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include <algorithm>
@@ -29,6 +30,7 @@ constexpr uint16_t RETRY_BASE_MS     = 800; // backoff base (se duplica por inte
 constexpr unsigned long TIEMPO_BARRIDO = 20000;          // 20 s de captura (más tiempo = más chances de pillar iOS)
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
 constexpr uint16_t HTTP_TIMEOUT_MS = 5000;
+constexpr uint32_t WDT_TIMEOUT_S = 60;                   // reset si el loop se traba más de 60 s
 constexpr int MIN_PROBE_PACKET_LEN = 26;
 constexpr unsigned long CHANNEL_DWELL_MS = 200;           // más rápido entre canales = más sweeps completos
 constexpr uint8_t SNIFFER_CHANNELS[] = {1, 6, 11, 2, 7, 3, 8, 4, 9, 5, 10};
@@ -289,6 +291,7 @@ bool postear_json(const String& body) {
     http.addHeader("Content-Type", "application/json");
     if (strlen(PAX_API_TOKEN) > 0) http.addHeader("X-Pax-Token", PAX_API_TOKEN);
 
+    esp_task_wdt_reset();
     int code = http.POST(body);
     Serial.printf(">> POST intento %u/%u -> code %d\n", intento, MAX_SEND_ATTEMPTS, code);
     http.end();
@@ -319,7 +322,10 @@ void enviar_http(const std::vector<Objetivo>& ranking, int total) {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   unsigned long t = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t < WIFI_CONNECT_TIMEOUT_MS) delay(100);
+  while (WiFi.status() != WL_CONNECTED && millis() - t < WIFI_CONNECT_TIMEOUT_MS) {
+    esp_task_wdt_reset();
+    delay(100);
+  }
 
   String payload = construir_payload(ranking, total);
   Serial.print(">> Payload bytes: ");
@@ -357,12 +363,16 @@ void setup() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   Serial.begin(115200);
   Serial.printf("\n>> PaxRadar firmware v%s\n", FIRMWARE_VERSION);
+  esp_task_wdt_config_t wdt_cfg = { .timeout_ms = WDT_TIMEOUT_S * 1000, .idle_core_mask = 0, .trigger_panic = true };
+  esp_task_wdt_reconfigure(&wdt_cfg);
+  esp_task_wdt_add(NULL);
   WiFi.persistent(false);
   inicio_ciclo = millis();
   iniciar_sniffer();
 }
 
 void loop() {
+  esp_task_wdt_reset();
   actualizar_canal_sniffer();
 
   if (millis() - inicio_ciclo >= TIEMPO_BARRIDO) {

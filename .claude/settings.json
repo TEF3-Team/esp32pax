@@ -13,11 +13,13 @@
       "Bash(launchctl unload *)",
       "Bash(rm /Users/oscaraguilera/Library/LaunchAgents/com.paxradar.server.plist)",
       "Bash(find /Users/oscaraguilera -maxdepth 2 -name \"*.sh\" 2>/dev/null)",
-      "Read(//Users/oscaraguilera/**)"
+      "Read(//Users/oscaraguilera/**)",
+      "Bash(rm /Users/oscaraguilera/Desktop/esp32Pax/CHANGELOG.md \\\\ *)"
     ],
     "additionalDirectories": [
       "/Users/oscaraguilera/Library/LaunchAgents",
-      "/Users/oscaraguilera"
+      "/Users/oscaraguilera",
+      "/Users/oscaraguilera/Desktop/esp32Pax"
     ]
   }
 }
